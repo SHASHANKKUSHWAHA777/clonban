@@ -79,6 +79,9 @@ class DexResultOut(BaseModel):
     method_count_candidate: Optional[int]
     ssdeep_score: Optional[float]
     api_call_similarity: Optional[float]
+    weighted_api_similarity: Optional[float] = None
+    method_api_similarity: Optional[float] = None
+    cluster_similarity: Optional[float] = None
 
     class Config:
         from_attributes = True

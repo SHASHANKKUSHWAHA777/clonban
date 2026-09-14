@@ -7,6 +7,8 @@ import {
 } from "@/lib/api";
 import { ScoreRing } from "@/components/ScoreRing";
 import { StageTracker } from "@/components/StageTracker";
+import { SignalBreakdown } from "@/components/SignalBreakdown";
+import { AttackSurfaceDiff } from "@/components/AttackSurfaceDiff";
 
 type Phase = "idle" | "submitting" | "running" | "done" | "error";
 
@@ -79,7 +81,7 @@ export default function Home() {
         <h1 className="mt-2 text-3xl font-semibold text-ink">APK Clone &amp; Impersonation Detector</h1>
         <p className="mt-2 max-w-2xl text-sm text-dim">
           Upload a legitimate APK and a candidate APK. The system compares identity,
-          icon &amp; resources, and DEX structure across independent signals, then
+          icon &amp; resources, and DEX structure across nine independent signals, then
           reports clone probability, malware risk, and how confident that read is —
           never from a single signal alone.
         </p>
@@ -179,18 +181,24 @@ function ResultsDashboard({ result, onReset }: { result: FullAnalysisResult; onR
 
   return (
     <div className="flex flex-col gap-8">
+      {/* ── Top-level gauges ── */}
       <div className="grid gap-4 sm:grid-cols-3">
         <ScoreRing label="Clone Probability" value={fs?.clone_probability ?? 0} color="#7C5CFC" />
         <ScoreRing label="Malware Risk" value={fs?.malware_risk ?? 0} color="#FB4B67" />
         <ScoreRing label="Confidence" value={fs?.confidence ?? 0} color="#22D3EE" />
       </div>
 
+      {/* ── Verdict summary ── */}
       {fs?.verdict_summary && (
         <div className="rounded-xl border border-line bg-panel px-5 py-4 text-sm text-ink">
           {fs.verdict_summary}
         </div>
       )}
 
+      {/* ── 9-Signal Breakdown ── */}
+      {fs && <SignalBreakdown finalScore={fs} />}
+
+      {/* ── Identity table ── */}
       <section>
         <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-dim">Identity</h2>
         <div className="overflow-hidden rounded-xl border border-line">
@@ -202,21 +210,19 @@ function ResultsDashboard({ result, onReset }: { result: FullAnalysisResult; onR
               <Row label="Package" a={orig?.package_name} b={cand?.package_name} />
               <Row label="App label" a={orig?.app_label} b={cand?.app_label} />
               <Row label="Version" a={orig?.version_name} b={cand?.version_name} />
+              <Row label="Version code" a={orig?.version_code} b={cand?.version_code} />
+              <Row label="Min SDK" a={orig?.min_sdk?.toString()} b={cand?.min_sdk?.toString()} />
+              <Row label="Target SDK" a={orig?.target_sdk?.toString()} b={cand?.target_sdk?.toString()} />
               <Row label="Cert SHA-256" a={orig?.cert_sha256} b={cand?.cert_sha256} mono />
             </tbody>
           </table>
         </div>
       </section>
 
-      <section>
-        <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-dim">Evidence &amp; component scores</h2>
-        <div className="grid gap-3 sm:grid-cols-2">
-          {fs && Object.entries(fs.component_scores).map(([k, v]) => (
-            <ScoreBar key={k} label={k} value={v} />
-          ))}
-        </div>
-      </section>
+      {/* ── Attack Surface Diff (Permissions / Components / Clusters) ── */}
+      <AttackSurfaceDiff result={result} />
 
+      {/* ── Risk findings ── */}
       <section>
         <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-dim">
           Risk findings ({result.risk_findings.length})
@@ -238,6 +244,7 @@ function ResultsDashboard({ result, onReset }: { result: FullAnalysisResult; onR
         )}
       </section>
 
+      {/* ── Icon comparison note ── */}
       {result.similarity?.diff_image_path && (
         <section>
           <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-dim">Icon comparison</h2>
@@ -245,6 +252,7 @@ function ResultsDashboard({ result, onReset }: { result: FullAnalysisResult; onR
         </section>
       )}
 
+      {/* ── Report downloads ── */}
       <section className="flex flex-wrap gap-3">
         {result.report?.pdf_path && (
           <a href={downloadReportUrl(result.job_id, "pdf")} className="rounded-lg border border-line bg-panel px-4 py-2 text-sm text-ink hover:border-cyan/50">Download PDF report</a>
@@ -263,26 +271,12 @@ function ResultsDashboard({ result, onReset }: { result: FullAnalysisResult; onR
 
 function Row({ label, a, b, mono }: { label: string; a?: string | null; b?: string | null; mono?: boolean }) {
   const cls = mono ? "font-mono text-xs" : "text-sm";
+  const isDiff = a && b && a !== b;
   return (
     <tr className="border-t border-line">
       <td className="px-4 py-2 text-dim">{label}</td>
       <td className={`px-4 py-2 text-ink ${cls}`}>{a || "—"}</td>
-      <td className={`px-4 py-2 text-ink ${cls}`}>{b || "—"}</td>
+      <td className={`px-4 py-2 ${cls} ${isDiff ? "text-amber" : "text-ink"}`}>{b || "—"}</td>
     </tr>
-  );
-}
-
-function ScoreBar({ label, value }: { label: string; value: number }) {
-  const pct = Math.round(value * 100);
-  return (
-    <div className="rounded-lg border border-line bg-panel px-4 py-3">
-      <div className="mb-1.5 flex items-center justify-between text-xs">
-        <span className="capitalize text-dim">{label}</span>
-        <span className="font-mono text-ink">{pct}%</span>
-      </div>
-      <div className="h-1.5 w-full rounded-full bg-line">
-        <div className="h-1.5 rounded-full bg-cyan" style={{ width: `${pct}%` }} />
-      </div>
-    </div>
   );
 }

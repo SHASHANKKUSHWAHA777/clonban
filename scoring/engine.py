@@ -18,13 +18,15 @@ not a validated true-positive rate (project rule #6).
 """
 
 DEFAULT_WEIGHTS = {
-    "certificate": 0.15,
-    "package": 0.10,
-    "icon": 0.15,
-    "strings": 0.15,
+    "certificate": 0.12,
+    "package": 0.08,
+    "icon": 0.12,
+    "strings": 0.13,
     "layout": 0.10,
-    "dex": 0.20,
-    "resources": 0.15,
+    "dex": 0.18,
+    "resources": 0.12,
+    "manifest": 0.08,
+    "permissions": 0.07,
 }
 
 
@@ -44,14 +46,16 @@ def compute_scores(identity: dict, similarity: dict, dex: dict, weights: dict | 
         "layout": similarity.get("layout_score") or 0.0,
         "dex": dex.get("dex_score") or 0.0,
         "resources": similarity.get("resource_score") or 0.0,
+        "manifest": identity.get("manifest_score") or 0.0,
+        "permissions": identity.get("permissions_score") or 0.0,
     }
 
-    clone_probability = sum(component_scores[k] * weights[k] for k in weights)
+    clone_probability = sum(component_scores[k] * weights.get(k, 0.0) for k in component_scores)
     clone_probability = round(min(max(clone_probability, 0.0), 1.0), 4)
 
     malware_risk = round(min(max(dex.get("malware_risk") or 0.0, 0.0), 1.0), 4)
 
-    # Confidence = evidence coverage: how many of the 7 components produced
+    # Confidence = evidence coverage: how many of the 9 components produced
     # a non-zero, non-null signal, penalized further when the underlying
     # extraction reported a parse error.
     available = [v for v in component_scores.values() if v is not None]
