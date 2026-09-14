@@ -15,6 +15,7 @@ const config: Config = {
         amber: "#F5A524",
         rose: "#FB4B67",
         mint: "#2FD583",
+        violet: "#7C5CFC",
       },
       fontFamily: {
         sans: ["var(--font-inter)", "system-ui", "sans-serif"],

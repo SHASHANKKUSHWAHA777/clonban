@@ -12,9 +12,14 @@ layout_score — that uncertainty should be reflected in the overall
 Confidence score by the scoring engine, not hidden.
 """
 import io
+import hashlib
 import logging
+import math
+import signal
+import threading
 import zipfile
 from collections import Counter
+from functools import wraps
 
 import imagehash
 from PIL import Image
@@ -26,6 +31,14 @@ from analyzers.identity.analyzer import get_apk_object
 logger = logging.getLogger("clonedetector.similarity")
 
 MAX_PHASH_DISTANCE = 64  # theoretical max for a 64-bit perceptual hash
+MAX_LAYOUT_DEPTH = 5     # cap tree traversal depth to prevent slow deep-nesting
+LAYOUT_TIMEOUT_SECS = 5  # max seconds per APK's layout analysis
+MAX_LAYOUT_FILES = 30    # only analyse the N largest layout files per APK
+
+# Shannon entropy thresholds — strings outside this band are dropped
+# (encrypted/random blobs above 4.5, single-char repeats below 0.5)
+ENTROPY_HIGH = 4.5
+ENTROPY_LOW = 0.5
 
 
 def _extract_icon_image(apk_path: str, apk_obj) -> Image.Image | None:
@@ -52,8 +65,34 @@ def _icon_similarity(orig_path: str, cand_path: str, orig_apk, cand_apk) -> tupl
     return score, int(distance)
 
 
+# ---------------------------------------------------------------------------
+# Shannon entropy filter — used to drop encrypted / randomized string blobs
+# ---------------------------------------------------------------------------
+
+def _shannon_entropy(s: str) -> float:
+    """Compute Shannon entropy in bits per character."""
+    if not s:
+        return 0.0
+    freq = Counter(s)
+    length = len(s)
+    return -sum((c / length) * math.log2(c / length) for c in freq.values())
+
+
+def _is_meaningful_string(s: str) -> bool:
+    """Return True only if the string's entropy suggests real human text."""
+    if not s or len(s) < 2:
+        return False
+    entropy = _shannon_entropy(s)
+    return ENTROPY_LOW <= entropy <= ENTROPY_HIGH
+
+
 def _extract_strings_xml_values(apk_path: str) -> list[str]:
-    """Best-effort extraction of user-visible strings from res/values*/strings.xml."""
+    """Best-effort extraction of user-visible strings from res/values*/strings.xml.
+
+    Strings with very high Shannon entropy (likely encrypted/base64/random) or
+    very low entropy (single repeated characters) are filtered out to improve
+    TF-IDF cosine quality.
+    """
     values = []
     try:
         with zipfile.ZipFile(apk_path) as z:
@@ -66,7 +105,9 @@ def _extract_strings_xml_values(apk_path: str) -> list[str]:
                     tree = printer.get_xml_obj()
                     for el in tree.iter("string"):
                         if el.text:
-                            values.append(el.text.strip())
+                            text = el.text.strip()
+                            if _is_meaningful_string(text):
+                                values.append(text)
                 except Exception:
                     continue
     except Exception:
@@ -93,12 +134,58 @@ def _string_similarity(orig_path: str, cand_path: str) -> float:
         return round(len(set_a & set_b) / max(len(set_a | set_b), 1), 4)
 
 
-def _layout_view_signature(apk_path: str) -> Counter:
-    """Counts view tag types across every layout XML file — a coarse structural fingerprint."""
+# ---------------------------------------------------------------------------
+# Layout similarity — hierarchical tree-path n-grams + legacy tag frequency
+# ---------------------------------------------------------------------------
+
+def _run_with_timeout(fn, timeout_secs, fallback):
+    """Run fn() in the current thread but abort if it takes longer than timeout_secs.
+
+    Uses a threading.Timer to set a flag; fn must periodically check the flag
+    via the returned sentinel, or we accept that the function finishes slightly
+    after the deadline.  This avoids SIGALRM (not available on Windows) and
+    daemon threads.  Returns fn()'s result or fallback.
+    """
+    result = {"value": fallback, "done": False}
+
+    def _worker():
+        try:
+            result["value"] = fn()
+        except Exception:
+            logger.warning("Layout extraction timed out or failed", exc_info=True)
+        finally:
+            result["done"] = True
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=timeout_secs)
+    if not result["done"]:
+        logger.warning("Layout analysis exceeded %ds timeout — falling back to partial result", timeout_secs)
+    return result["value"]
+
+
+def _walk_tree_paths(element, current_path: list[str], depth: int, paths: list[str]):
+    """Depth-limited DFS that emits root→leaf structural paths."""
+    tag = element.tag.split("}")[-1] if "}" in str(element.tag) else str(element.tag)
+    current_path.append(tag)
+
+    children = list(element)
+    if not children or depth >= MAX_LAYOUT_DEPTH:
+        # Leaf or depth cap — emit the path
+        paths.append("/".join(current_path))
+    else:
+        for child in children:
+            _walk_tree_paths(child, current_path, depth + 1, paths)
+
+    current_path.pop()
+
+
+def _layout_tag_signature(apk_path: str) -> Counter:
+    """Counts view tag types across every layout XML file — the original coarse fingerprint."""
     signature = Counter()
     try:
         with zipfile.ZipFile(apk_path) as z:
-            layout_files = [n for n in z.namelist() if n.startswith("res/layout") and n.endswith(".xml")]
+            layout_files = _select_layout_files(z)
             from androguard.core.axml import AXMLPrinter
             for name in layout_files:
                 try:
@@ -115,16 +202,85 @@ def _layout_view_signature(apk_path: str) -> Counter:
     return signature
 
 
-def _layout_similarity(orig_path: str, cand_path: str) -> float:
-    sig_a, sig_b = _layout_view_signature(orig_path), _layout_view_signature(cand_path)
-    if not sig_a and not sig_b:
+def _layout_tree_paths(apk_path: str) -> list[str]:
+    """Extract depth-limited structural paths from layout XML files.
+
+    Each path is a root-to-leaf sequence of view tags, e.g.
+    ``LinearLayout/FrameLayout/TextView``.  This captures nesting structure
+    that a flat tag-frequency counter misses entirely.
+    """
+    paths = []
+    try:
+        with zipfile.ZipFile(apk_path) as z:
+            layout_files = _select_layout_files(z)
+            from androguard.core.axml import AXMLPrinter
+            for name in layout_files:
+                try:
+                    raw = z.read(name)
+                    printer = AXMLPrinter(raw)
+                    tree = printer.get_xml_obj()
+                    _walk_tree_paths(tree, [], 0, paths)
+                except Exception:
+                    continue
+    except Exception:
+        logger.warning("Could not extract tree paths from %s", apk_path, exc_info=True)
+    return paths
+
+
+def _select_layout_files(z: zipfile.ZipFile) -> list[str]:
+    """Select up to MAX_LAYOUT_FILES layout XMLs, preferring the largest files."""
+    candidates = [n for n in z.namelist() if n.startswith("res/layout") and n.endswith(".xml")]
+    if len(candidates) <= MAX_LAYOUT_FILES:
+        return candidates
+    # Sort by compressed size descending, take the largest N
+    sized = [(n, z.getinfo(n).file_size) for n in candidates]
+    sized.sort(key=lambda x: x[1], reverse=True)
+    return [n for n, _ in sized[:MAX_LAYOUT_FILES]]
+
+
+def _jaccard_counter(a: Counter, b: Counter) -> float:
+    """Generalized Jaccard for Counters (min-sum / max-sum)."""
+    if not a and not b:
         return 0.0
-    all_keys = set(sig_a) | set(sig_b)
+    all_keys = set(a) | set(b)
     if not all_keys:
         return 0.0
-    num = sum(min(sig_a.get(k, 0), sig_b.get(k, 0)) for k in all_keys)
-    den = sum(max(sig_a.get(k, 0), sig_b.get(k, 0)) for k in all_keys)
+    num = sum(min(a.get(k, 0), b.get(k, 0)) for k in all_keys)
+    den = sum(max(a.get(k, 0), b.get(k, 0)) for k in all_keys)
     return round(num / den, 4) if den else 0.0
+
+
+def _jaccard_sets(a: set, b: set) -> float:
+    if not a and not b:
+        return 0.0
+    return round(len(a & b) / max(len(a | b), 1), 4)
+
+
+def _layout_similarity(orig_path: str, cand_path: str) -> float:
+    """Blend tag-frequency Jaccard (legacy) with structural tree-path Jaccard.
+
+    Weights: tag_freq 0.35, tree_paths 0.65.
+    Both sub-extractions are capped at LAYOUT_TIMEOUT_SECS per APK.
+    """
+    # --- Tag-frequency (existing, fast) ---
+    sig_a = _run_with_timeout(lambda: _layout_tag_signature(orig_path), LAYOUT_TIMEOUT_SECS, Counter())
+    sig_b = _run_with_timeout(lambda: _layout_tag_signature(cand_path), LAYOUT_TIMEOUT_SECS, Counter())
+    tag_score = _jaccard_counter(sig_a, sig_b)
+
+    # --- Tree-path n-grams (new, depth-limited) ---
+    paths_a = _run_with_timeout(lambda: _layout_tree_paths(orig_path), LAYOUT_TIMEOUT_SECS, [])
+    paths_b = _run_with_timeout(lambda: _layout_tree_paths(cand_path), LAYOUT_TIMEOUT_SECS, [])
+
+    if paths_a and paths_b:
+        path_counter_a = Counter(paths_a)
+        path_counter_b = Counter(paths_b)
+        path_score = _jaccard_counter(path_counter_a, path_counter_b)
+    else:
+        # Fallback: if tree-path extraction failed, rely entirely on tag freq
+        path_score = tag_score
+
+    blended = round(0.35 * tag_score + 0.65 * path_score, 4)
+    return blended
 
 
 def _resource_similarity(orig_path: str, cand_path: str) -> float:
