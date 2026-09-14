@@ -24,78 +24,6 @@ from androguard.misc import AnalyzeAPK
 
 logger = logging.getLogger("clonedetector.dexrisk")
 
-# ---------------------------------------------------------------------------
-# Sensitive API Clusters — groups of framework API patterns that perform
-# security-relevant operations. Membership overlap in these clusters is
-# weighted more heavily than generic "app uses java.lang.String".
-# ---------------------------------------------------------------------------
-
-SENSITIVE_API_CLUSTERS = {
-    "crypto": [
-        "Ljavax/crypto/", "Ljava/security/", "Ljavax/net/ssl/",
-    ],
-    "network": [
-        "Ljava/net/", "Lorg/apache/http/", "Lokhttp3/", "Landroid/net/",
-    ],
-    "sms_telephony": [
-        "Landroid/telephony/SmsManager", "Landroid/telephony/TelephonyManager",
-        "SEND_SMS", "READ_SMS", "RECEIVE_SMS",
-    ],
-    "reflection_dynamic": [
-        "Ljava/lang/reflect/", "Ldalvik/system/DexClassLoader",
-        "Ldalvik/system/PathClassLoader", "Ldalvik/system/InMemoryDex",
-    ],
-    "device_admin": [
-        "Landroid/app/admin/DeviceAdminReceiver", "BIND_DEVICE_ADMIN",
-    ],
-    "accessibility": [
-        "Landroid/accessibilityservice/", "BIND_ACCESSIBILITY_SERVICE",
-    ],
-    "content_provider": [
-        "Landroid/content/ContentResolver;->query",
-        "Landroid/content/ContentResolver;->insert",
-        "Landroid/content/ContentResolver;->delete",
-    ],
-    "camera_media": [
-        "Landroid/hardware/Camera", "Landroid/media/MediaRecorder",
-        "Landroid/hardware/camera2/",
-    ],
-    "location": [
-        "Landroid/location/LocationManager", "ACCESS_FINE_LOCATION",
-        "ACCESS_COARSE_LOCATION",
-    ],
-    "webview": [
-        "Landroid/webkit/WebView", "Landroid/webkit/JavascriptInterface",
-    ],
-}
-
-# Common / low-signal framework classes that almost every app references.
-# These receive reduced weight in the weighted Jaccard to avoid inflating
-# similarity between unrelated apps.
-
-COMMON_LOW_SIGNAL_PREFIXES = [
-    "Ljava/lang/String", "Ljava/lang/Object", "Ljava/lang/Integer",
-    "Ljava/lang/Boolean", "Ljava/lang/Long", "Ljava/lang/Float",
-    "Ljava/lang/Double", "Ljava/lang/StringBuilder", "Ljava/lang/Exception",
-    "Ljava/lang/Throwable", "Ljava/lang/Class", "Ljava/lang/System",
-    "Ljava/util/List", "Ljava/util/Map", "Ljava/util/Set",
-    "Ljava/util/ArrayList", "Ljava/util/HashMap", "Ljava/util/HashSet",
-    "Ljava/util/Iterator", "Ljava/util/Collections",
-    "Ljava/io/InputStream", "Ljava/io/OutputStream",
-    "Landroid/os/Bundle", "Landroid/os/Handler",
-    "Landroid/content/Context", "Landroid/content/Intent",
-    "Landroid/view/View", "Landroid/util/Log",
-    "Landroid/app/Activity", "Landroid/widget/TextView",
-    "Landroid/widget/Button",
-]
-
-# Weights: low-signal classes get 0.2, sensitive clusters get 3.0, everything
-# else gets 1.0.
-WEIGHT_LOW_SIGNAL = 0.2
-WEIGHT_SENSITIVE = 3.0
-WEIGHT_DEFAULT = 1.0
-
-
 # (indicator_type, severity, description, matcher)
 # matcher receives (permissions:set[str], external_api_names:set[str])
 SUSPICIOUS_RULES = [
@@ -136,25 +64,16 @@ SUSPICIOUS_RULES = [
 
 
 def _analyze_single(apk_path: str):
-    """Returns (class_count, method_count, external_api_classes, external_api_methods, permissions, raw_dex)."""
+    """Returns (class_count, method_count, external_api_set, permissions_set, raw_dex_bytes)."""
     a, d_list, dx = AnalyzeAPK(apk_path)
 
     class_count = sum(len(list(d.get_classes())) for d in d_list)
     method_count = sum(len(list(d.get_methods())) for d in d_list)
 
-    external_api_classes = set()
-    external_api_methods = set()
+    external_apis = set()
     try:
         for ext_class in dx.get_external_classes():
-            class_name = str(ext_class.get_vm_class().get_name())
-            external_api_classes.add(class_name)
-            # Extract method-level references for finer-grained comparison
-            try:
-                for method in ext_class.get_vm_class().get_methods():
-                    method_sig = f"{class_name}->{method.get_name()}"
-                    external_api_methods.add(method_sig)
-            except Exception:
-                pass  # some external classes may not enumerate methods cleanly
+            external_apis.add(str(ext_class.get_vm_class().get_name()))
     except Exception:
         logger.warning("external class extraction failed for %s", apk_path, exc_info=True)
 
@@ -166,7 +85,7 @@ def _analyze_single(apk_path: str):
     except Exception:
         pass
 
-    return class_count, method_count, external_api_classes, external_api_methods, permissions, raw_dex
+    return class_count, method_count, external_apis, permissions, raw_dex
 
 
 def _ssdeep_score(raw_a: bytes, raw_b: bytes) -> float | None:
@@ -182,60 +101,10 @@ def _ssdeep_score(raw_a: bytes, raw_b: bytes) -> float | None:
         return None
 
 
-def _api_weight(api_name: str) -> float:
-    """Return a weight for the given API name based on signal value.
-
-    Low-signal ubiquitous classes (String, Object, List, etc.) are down-weighted
-    to 0.2; APIs matching sensitive clusters are boosted to 3.0; everything else
-    gets 1.0.
-    """
-    for prefix in COMMON_LOW_SIGNAL_PREFIXES:
-        if api_name.startswith(prefix):
-            return WEIGHT_LOW_SIGNAL
-    for cluster_patterns in SENSITIVE_API_CLUSTERS.values():
-        for pattern in cluster_patterns:
-            if pattern in api_name:
-                return WEIGHT_SENSITIVE
-    return WEIGHT_DEFAULT
-
-
-def _weighted_api_similarity(apis_a: set, apis_b: set) -> float:
-    """Weighted Jaccard similarity — rare/sensitive APIs contribute more than
-    ubiquitous classes like java.lang.String."""
-    all_apis = apis_a | apis_b
-    if not all_apis:
+def _api_call_similarity(apis_a: set, apis_b: set) -> float:
+    if not apis_a and not apis_b:
         return 0.0
-    num = 0.0
-    den = 0.0
-    for api in all_apis:
-        w = _api_weight(api)
-        in_a = 1.0 if api in apis_a else 0.0
-        in_b = 1.0 if api in apis_b else 0.0
-        num += w * min(in_a, in_b)
-        den += w * max(in_a, in_b)
-    return round(num / den, 4) if den > 0 else 0.0
-
-
-def _sensitive_cluster_similarity(apis_a: set, apis_b: set) -> float:
-    """Compare which sensitive API clusters each APK touches.
-
-    Two APKs that both use crypto + SMS + reflection but different generic APIs
-    should score high here, because the *functional capability surface* matches.
-    """
-    def _cluster_membership(apis: set) -> set:
-        clusters = set()
-        for cluster_name, patterns in SENSITIVE_API_CLUSTERS.items():
-            for api in apis:
-                if any(p in api for p in patterns):
-                    clusters.add(cluster_name)
-                    break
-        return clusters
-
-    clusters_a = _cluster_membership(apis_a)
-    clusters_b = _cluster_membership(apis_b)
-    if not clusters_a and not clusters_b:
-        return 0.0
-    return round(len(clusters_a & clusters_b) / max(len(clusters_a | clusters_b), 1), 4)
+    return round(len(apis_a & apis_b) / max(len(apis_a | apis_b), 1), 4)
 
 
 def _run_findings(label: str, permissions: set, apis: set) -> list[dict]:
@@ -253,44 +122,20 @@ def _run_findings(label: str, permissions: set, apis: set) -> list[dict]:
 
 
 def analyze(original_path: str, candidate_path: str) -> dict:
-    class_a, method_a, api_classes_a, api_methods_a, perms_a, raw_a = _analyze_single(original_path)
-    class_b, method_b, api_classes_b, api_methods_b, perms_b, raw_b = _analyze_single(candidate_path)
+    class_a, method_a, apis_a, perms_a, raw_a = _analyze_single(original_path)
+    class_b, method_b, apis_b, perms_b, raw_b = _analyze_single(candidate_path)
 
-    # Weighted API similarity (class-level, with sensitive boosting)
-    weighted_api_sim = _weighted_api_similarity(api_classes_a, api_classes_b)
-
-    # Method-level similarity (finer grained but same weighting logic)
-    method_api_sim = _weighted_api_similarity(api_methods_a, api_methods_b)
-
-    # Sensitive cluster overlap
-    cluster_sim = _sensitive_cluster_similarity(api_classes_a, api_classes_b)
-
+    api_similarity = _api_call_similarity(apis_a, apis_b)
     ssdeep_score = _ssdeep_score(raw_a, raw_b)
 
-    # Legacy unweighted Jaccard for backward-compatible output field
-    legacy_api_similarity = round(len(api_classes_a & api_classes_b) / max(len(api_classes_a | api_classes_b), 1), 4) \
-        if (api_classes_a or api_classes_b) else 0.0
-
     # dex_score blends the obfuscation-resistant API-reference similarity
-    # with the fuzzy binary hash when available; falls back to API+cluster only.
+    # with the fuzzy binary hash when available; falls back to API-only.
     if ssdeep_score is not None:
-        dex_score = round(
-            0.35 * weighted_api_sim +
-            0.20 * method_api_sim +
-            0.25 * ssdeep_score +
-            0.20 * cluster_sim,
-            4
-        )
+        dex_score = round(0.6 * api_similarity + 0.4 * ssdeep_score, 4)
     else:
-        # Without ssdeep, redistribute its weight to the other signals
-        dex_score = round(
-            0.45 * weighted_api_sim +
-            0.25 * method_api_sim +
-            0.30 * cluster_sim,
-            4
-        )
+        dex_score = api_similarity
 
-    findings = _run_findings("original", perms_a, api_classes_a) + _run_findings("candidate", perms_b, api_classes_b)
+    findings = _run_findings("original", perms_a, apis_a) + _run_findings("candidate", perms_b, apis_b)
 
     # Malware risk is driven by findings on the CANDIDATE only, weighted by
     # severity — the original app's own behavior is not itself "risk".
@@ -309,9 +154,6 @@ def analyze(original_path: str, candidate_path: str) -> dict:
         "method_count_original": method_a,
         "method_count_candidate": method_b,
         "ssdeep_score": ssdeep_score,
-        "api_call_similarity": legacy_api_similarity,
-        "weighted_api_similarity": weighted_api_sim,
-        "method_api_similarity": method_api_sim,
-        "cluster_similarity": cluster_sim,
+        "api_call_similarity": api_similarity,
         "findings": findings,
     }

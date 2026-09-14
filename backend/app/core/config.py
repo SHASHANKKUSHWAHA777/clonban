@@ -36,15 +36,13 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:3000"
 
     # Scoring weights — must sum to ~1.0. Configurable per README instructions.
-    WEIGHT_CERTIFICATE: float = 0.12
-    WEIGHT_PACKAGE: float = 0.08
-    WEIGHT_ICON: float = 0.12
-    WEIGHT_STRINGS: float = 0.13
+    WEIGHT_CERTIFICATE: float = 0.15
+    WEIGHT_PACKAGE: float = 0.10
+    WEIGHT_ICON: float = 0.15
+    WEIGHT_STRINGS: float = 0.15
     WEIGHT_LAYOUT: float = 0.10
-    WEIGHT_DEX: float = 0.18
-    WEIGHT_RESOURCES: float = 0.12
-    WEIGHT_MANIFEST: float = 0.08
-    WEIGHT_PERMISSIONS: float = 0.07
+    WEIGHT_DEX: float = 0.20
+    WEIGHT_RESOURCES: float = 0.15
 
     LOG_LEVEL: str = "INFO"
 
@@ -62,8 +60,6 @@ class Settings(BaseSettings):
             "layout": self.WEIGHT_LAYOUT,
             "dex": self.WEIGHT_DEX,
             "resources": self.WEIGHT_RESOURCES,
-            "manifest": self.WEIGHT_MANIFEST,
-            "permissions": self.WEIGHT_PERMISSIONS,
         }
 
 
