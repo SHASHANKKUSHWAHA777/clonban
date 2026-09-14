@@ -61,8 +61,28 @@ def run_analysis_pipeline(job_id: str):
         _set_status(db, job, JobStatus.ANALYZING_IDENTITY, "analyzing_identity")
         identity_out = _safe_run(
             lambda: identity_module.analyze(original_path, candidate_path),
-            fallback={"certificate_score": 0.0, "certificate_match": False, "package_score": 0.0,
-                      "manifest_score": 0.0, "permissions_score": 0.0, "findings": [], "apks": {}},
+            fallback={
+                "service": "identity",
+                "certificate_status": "UNKNOWN",
+                "certificate_identity_score": None,
+                "certificate_score": 0.0,
+                "certificate_match": False,
+                "package_score": 0.0,
+                "package_similarity": None,
+                "package_match_state": "UNRELATED",
+                "manifest_score": 0.0,
+                "permissions_score": 0.0,
+                "manifest_findings": [],
+                "permissions_baseline": [],
+                "permissions_candidate": [],
+                "new_permissions": [],
+                "removed_permissions": [],
+                "exported_components_baseline": [],
+                "exported_components_candidate": [],
+                "findings": [],
+                "apks": {"original": {}, "candidate": {}},
+                "errors": [],
+            },
             stage="identity",
         )
         _persist_apk_extras(db, apk_rows, identity_out.get("apks", {}))
@@ -104,30 +124,51 @@ def run_analysis_pipeline(job_id: str):
         _set_status(db, job, JobStatus.ANALYZING_DEX, "analyzing_dex")
         dex_out = _safe_run(
             lambda: dexrisk_module.analyze(original_path, candidate_path),
-            fallback={"dex_score": 0.0, "malware_risk": 0.0, "class_count_original": None,
-                      "class_count_candidate": None, "method_count_original": None,
-                      "method_count_candidate": None, "ssdeep_score": None,
-                      "api_call_similarity": 0.0, "findings": []},
+            fallback={
+                "service": "dex-risk",
+                "bytecode_similarity": None,
+                "malware_risk_score": 0,
+                "risk_findings": [],
+                "dex_files_baseline": [],
+                "dex_files_candidate": [],
+                "dex_count_baseline": 0,
+                "dex_count_candidate": 0,
+                "errors": [],
+                # Legacy fallback fields
+                "dex_score": 0.0,
+                "malware_risk": 0.0,
+                "class_count_original": None,
+                "class_count_candidate": None,
+                "method_count_original": None,
+                "method_count_candidate": None,
+                "ssdeep_score": None,
+                "api_call_similarity": 0.0,
+                "findings": [],
+            },
             stage="dex-risk",
         )
         db.add(DexResult(
             job_id=job.id,
             dex_score=dex_out.get("dex_score"),
             malware_risk=dex_out.get("malware_risk"),
+            malware_risk_score=dex_out.get("malware_risk_score"),
+            bytecode_similarity=dex_out.get("bytecode_similarity"),
             class_count_original=dex_out.get("class_count_original"),
             class_count_candidate=dex_out.get("class_count_candidate"),
             method_count_original=dex_out.get("method_count_original"),
             method_count_candidate=dex_out.get("method_count_candidate"),
             ssdeep_score=dex_out.get("ssdeep_score"),
             api_call_similarity=dex_out.get("api_call_similarity"),
+            dex_files_baseline=dex_out.get("dex_files_baseline"),
+            dex_files_candidate=dex_out.get("dex_files_candidate"),
+            dex_count_baseline=dex_out.get("dex_count_baseline"),
+            dex_count_candidate=dex_out.get("dex_count_candidate"),
+            errors=dex_out.get("errors"),
             raw=dex_out,
         ))
-        for f in dex_out.get("findings", []):
-            db.add(RiskFinding(job_id=job.id, finding_type=f["type"], severity=f["severity"],
-                                evidence=f["evidence"], source_apk=f.get("source_apk")))
-        for f in identity_out.get("findings", []):
-            db.add(RiskFinding(job_id=job.id, finding_type=f["type"], severity=f["severity"],
-                                evidence=f["evidence"], source_apk=f.get("source_apk", "both")))
+        # Persist findings — handle both V3 risk_findings and legacy findings.
+        _persist_risk_findings(db, job.id, dex_out)
+        _persist_risk_findings(db, job.id, identity_out, label="identity")
         db.commit()
 
         # ---- Scoring ----
@@ -170,6 +211,44 @@ def run_analysis_pipeline(job_id: str):
         db.close()
 
 
+def _persist_risk_findings(db, job_id, analyzer_output: dict, label: str = "dex-risk"):
+    """
+    Persist risk findings from analyzer output to the RiskFinding table.
+
+    Handles both V3 format (risk_findings with 'finding', 'category', 'contribution')
+    and legacy format (findings with 'type', 'severity', 'evidence', 'source_apk').
+    """
+    # V3 risk_findings format
+    risk_findings = analyzer_output.get("risk_findings", [])
+    if risk_findings:
+        for f in risk_findings:
+            db.add(RiskFinding(
+                job_id=job_id,
+                finding_type=f.get("finding", "UNKNOWN"),
+                severity=f.get("severity", "low"),
+                evidence=f.get("evidence", ""),
+                source_apk=f.get("source_apk", label),
+                category=f.get("category", "PERMISSION"),
+                contribution=f.get("contribution", 0),
+                baseline_present=f.get("baseline_present"),
+                candidate_present=f.get("candidate_present"),
+            ))
+
+    # Legacy findings format (identity still uses this; dex-risk produces both)
+    legacy_findings = analyzer_output.get("findings", [])
+    # Avoid double-persisting: if risk_findings already covers the legacy findings,
+    # skip. Otherwise persist legacy findings.
+    if not risk_findings and legacy_findings:
+        for f in legacy_findings:
+            db.add(RiskFinding(
+                job_id=job_id,
+                finding_type=f.get("type", "UNKNOWN"),
+                severity=f.get("severity", "low"),
+                evidence=f.get("evidence", ""),
+                source_apk=f.get("source_apk", label),
+            ))
+
+
 def _safe_run(fn, fallback: dict, stage: str) -> dict:
     try:
         return fn()
@@ -177,9 +256,15 @@ def _safe_run(fn, fallback: dict, stage: str) -> dict:
         logger.exception("Stage '%s' failed, falling back to neutral result", stage)
         fallback = dict(fallback)
         fallback.setdefault("findings", [])
+        fallback.setdefault("errors", [])
         fallback["findings"].append({
             "type": f"{stage.upper()}_STAGE_FAILED", "severity": "medium",
             "evidence": f"The {stage} analyzer raised an exception and was skipped; treat related scores as unavailable, not zero-similarity.",
+            "source_apk": "both",
+        })
+        fallback["errors"].append({
+            "stage": stage,
+            "message": "Analyzer raised an exception and was skipped.",
         })
         return fallback
 

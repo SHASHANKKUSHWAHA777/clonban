@@ -93,10 +93,15 @@ class IdentityResult(Base):
 
     certificate_score = Column(Float)
     certificate_match = Column(Boolean)
+    certificate_status = Column(String(32), nullable=True)  # SAME_SIGNER | DIFFERENT_SIGNER | UNKNOWN
+    certificate_identity_score = Column(Float, nullable=True)  # 1.0 | 0.0 | null
     package_score = Column(Float)
+    package_similarity = Column(Float, nullable=True)  # [0,1] or null
+    package_match_state = Column(String(32), nullable=True)  # EXACT_MATCH | NEAR_MATCH | UNRELATED
     manifest_score = Column(Float)
     permissions_score = Column(Float)
     findings = Column(JSON, default=list)
+    manifest_findings = Column(JSON, default=list)
     raw = Column(JSON, default=dict)
 
     job = relationship("AnalysisJob", back_populates="identity_result")
@@ -128,12 +133,19 @@ class DexResult(Base):
 
     dex_score = Column(Float)
     malware_risk = Column(Float)
+    malware_risk_score = Column(Integer, nullable=True)  # 0-100 integer
+    bytecode_similarity = Column(Float, nullable=True)  # [0,1] or null
     class_count_original = Column(Integer, nullable=True)
     class_count_candidate = Column(Integer, nullable=True)
     method_count_original = Column(Integer, nullable=True)
     method_count_candidate = Column(Integer, nullable=True)
     ssdeep_score = Column(Float, nullable=True)
     api_call_similarity = Column(Float, nullable=True)
+    dex_files_baseline = Column(JSON, default=list)
+    dex_files_candidate = Column(JSON, default=list)
+    dex_count_baseline = Column(Integer, nullable=True)
+    dex_count_candidate = Column(Integer, nullable=True)
+    errors = Column(JSON, default=list)
     raw = Column(JSON, default=dict)
 
     job = relationship("AnalysisJob", back_populates="dex_result")
@@ -149,6 +161,12 @@ class RiskFinding(Base):
     severity = Column(String(16))  # low | medium | high
     evidence = Column(Text)
     source_apk = Column(String(16), nullable=True)  # original | candidate
+
+    # V3 fields (additive)
+    category = Column(String(32), nullable=True)  # PERMISSION | COMPONENT | ...
+    contribution = Column(Integer, default=0)  # risk score contribution
+    baseline_present = Column(Boolean, nullable=True)
+    candidate_present = Column(Boolean, nullable=True)
 
     job = relationship("AnalysisJob", back_populates="risk_findings")
 

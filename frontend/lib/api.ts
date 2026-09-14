@@ -19,11 +19,48 @@ export interface ApkInfo {
   parse_error: string | null;
 }
 
+export interface IdentityResultOut {
+  certificate_score: number;
+  certificate_match: boolean;
+  certificate_status: string | null;
+  certificate_identity_score: number | null;
+  package_score: number;
+  package_similarity: number | null;
+  package_match_state: string | null;
+  manifest_score: number;
+  permissions_score: number;
+  manifest_findings: any[];
+  findings: any[];
+}
+
+export interface DexResultOut {
+  dex_score: number;
+  malware_risk: number;
+  malware_risk_score: number | null;
+  bytecode_similarity: number | null;
+  class_count_original: number | null;
+  class_count_candidate: number | null;
+  method_count_original: number | null;
+  method_count_candidate: number | null;
+  ssdeep_score: number | null;
+  api_call_similarity: number;
+  dex_files_baseline: string[];
+  dex_files_candidate: string[];
+  dex_count_baseline: number | null;
+  dex_count_candidate: number | null;
+  risk_findings: RiskFinding[];
+  errors: any[];
+}
+
 export interface RiskFinding {
   finding_type: string;
   severity: "low" | "medium" | "high";
   evidence: string;
   source_apk: string | null;
+  category: string | null;
+  contribution: number | null;
+  baseline_present: boolean | null;
+  candidate_present: boolean | null;
 }
 
 export interface FinalScore {
@@ -40,9 +77,9 @@ export interface FullAnalysisResult {
   status: JobStatus;
   error_message: string | null;
   apks: ApkInfo[];
-  identity: { certificate_score: number; certificate_match: boolean; package_score: number; manifest_score: number; permissions_score: number; findings: any[] } | null;
+  identity: IdentityResultOut | null;
   similarity: { icon_score: number; icon_phash_distance: number | null; string_score: number; layout_score: number; resource_score: number; diff_image_path: string | null; findings: any[] } | null;
-  dex: { dex_score: number; malware_risk: number; class_count_original: number | null; class_count_candidate: number | null; ssdeep_score: number | null; api_call_similarity: number } | null;
+  dex: DexResultOut | null;
   risk_findings: RiskFinding[];
   final_score: FinalScore | null;
   report: { json_path: string | null; html_path: string | null; pdf_path: string | null } | null;

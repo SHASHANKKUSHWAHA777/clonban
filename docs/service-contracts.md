@@ -1,4 +1,4 @@
-# Service Contracts (Phase 15)
+# Service Contracts (V3)
 
 Every analyzer is a plain Python function today (in-process worker calls),
 but returns a dict shaped exactly like what an independent ECS/Fargate
@@ -21,22 +21,36 @@ migration — the worker's `tasks.py` is the only place that would change.
 
 ```json
 {
-  "certificate_score": 0.10,
-  "certificate_match": false,
-  "package_score": 0.82,
-  "manifest_score": 0.75,
-  "permissions_score": 0.90,
-  "findings": [
-    {"type": "CERT_MISMATCH", "severity": "medium", "evidence": "..."}
+  "service": "identity",
+  "certificate_status": "SAME_SIGNER | DIFFERENT_SIGNER | UNKNOWN",
+  "certificate_identity_score": 1.0,
+  "certificate_identity_score": null,
+  "package_similarity": 0.82,
+  "package_match_state": "NEAR_MATCH | EXACT_MATCH | UNRELATED",
+  "manifest_findings": [
+    {"type": "PACKAGE_NEAR_MATCH", "severity": "INFO", "evidence": "...", "similarity": 0.82}
   ],
-  "apks": {
-    "original": { "package_name": "...", "cert_sha256": "...", ... },
-    "candidate": { "package_name": "...", "cert_sha256": "...", ... }
-  }
+  "findings": [
+    {"type": "CERT_MISMATCH", "severity": "medium", "evidence": "...", "source_apk": "both"}
+  ],
+  "baseline": {"package_name": "...", "app_label": "...", "version_name": "...", "version_code": "..."},
+  "candidate": {"package_name": "...", "app_label": "...", "version_name": "...", "version_code": "..."},
+  "permissions_baseline": [],
+  "permissions_candidate": [],
+  "new_permissions": [],
+  "removed_permissions": [],
+  "exported_components_baseline": [],
+  "exported_components_candidate": [],
+  "errors": [{"stage": "parse", "message": "..."}]
 }
 ```
 
-## similarity.results
+Legend:
+  - SAME_SIGNER → 1.0, DIFFERENT_SIGNER → 0.0, UNKNOWN → null
+  - DIFFERENT_SIGNER is evidence of re-signing, NOT automatic proof of cloning.
+  - Unavailable numeric signals use `null`, never `0`.
+
+## similarity.results (unchanged)
 
 ```json
 {
@@ -54,19 +68,31 @@ migration — the worker's `tasks.py` is the only place that would change.
 
 ```json
 {
-  "dex_score": 0.88,
-  "malware_risk": 0.72,
-  "class_count_original": 512,
-  "class_count_candidate": 498,
-  "method_count_original": 3040,
-  "method_count_candidate": 2991,
-  "ssdeep_score": 0.81,
-  "api_call_similarity": 0.85,
-  "findings": [
-    {"type": "ACCESSIBILITY_SERVICE", "severity": "medium", "evidence": "...", "source_apk": "candidate"}
-  ]
+  "service": "dex-risk",
+  "bytecode_similarity": 0.88,
+  "malware_risk_score": 0,
+  "risk_findings": [
+    {"finding": "NEW_RECEIVE_SMS", "category": "PERMISSION",
+     "severity": "HIGH", "contribution": 30,
+     "baseline_present": false, "candidate_present": true,
+     "evidence": "android.permission.RECEIVE_SMS"}
+  ],
+  "dex_files_baseline": ["classes.dex", "classes2.dex"],
+  "dex_files_candidate": ["classes.dex"],
+  "dex_count_baseline": 2,
+  "dex_count_candidate": 1,
+  "errors": [{"stage": "TLSH", "message": "..."}]
 }
 ```
+
+Deterministic risk rules (Phase 1):
+  New BIND_ACCESSIBILITY_SERVICE → +30
+  New SEND_SMS or RECEIVE_SMS    → +30
+  New SYSTEM_ALERT_WINDOW        → +25
+  New RECEIVE_BOOT_COMPLETED     → +15
+  New exported component         → +10 (max 2 counted)
+  New dangerous permission       → +5  (max 4 counted)
+  Final: risk_score = min(100, sum(contributions))
 
 ## scoring.results
 
@@ -82,5 +108,6 @@ migration — the worker's `tasks.py` is the only place that would change.
 ```
 
 All scores are floats in `[0, 1]`. `severity` is one of `low|medium|high`.
+`malware_risk_score` is an integer in `[0, 100]`.
 Nothing here claims an accuracy percentage that isn't backed by a
 measurement on `tests/samples/` — see Rule #6 in the project brief.

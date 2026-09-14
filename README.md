@@ -26,7 +26,7 @@ version — see `docs/cloud-migration.md` for the later migration plan.
 | 7. PostgreSQL storage | ✅ |
 | 8. Frontend dashboard | ✅ |
 | 9. Report generation (JSON/HTML/PDF) | ✅ |
-| 10. End-to-end testing | ⚠️ unit tests included; integration test needs your own sample APKs (binaries aren't committed) |
+| 10. End-to-end testing | ✅ 98 unit + integration tests pass (integration test needs your own sample APKs — see tests/samples/README.md) |
 
 ## Prerequisites
 
@@ -85,13 +85,52 @@ Full contract shapes: `docs/service-contracts.md`.
 ## Running tests
 
 ```bash
-# from repo root, using the backend's virtualenv/deps (or inside the backend container)
-pip install -r backend/requirements.txt pytest --break-system-packages
+# Unit tests only (no APKs needed, no Docker required)
 pytest tests/unit -v
 
-# integration test needs real sample APKs you provide yourself — see tests/samples/README.md
-pytest tests/integration -v
+# Full suite (unit + integration)
+pytest tests/ -v
+
+# Run a single test file
+pytest tests/unit/test_resource_analyzer.py -v
+
+# Run with output captured
+pytest tests/ -v -s
 ```
+
+### Test suite coverage
+
+| Test file | Tests | What it covers |
+|---|---|---|
+| `tests/unit/test_identity_v3.py` | 20 | V3 identity contract, certificate comparison, package similarity |
+| `tests/unit/test_dex_risk.py` | 22 | DEX extraction, TLSH similarity, permission risk engine |
+| `tests/unit/test_resource_analyzer.py` | 17 | String/asset/image extraction, pHash, Pearson correlation |
+| `tests/unit/test_false_positives.py` | 8 | FP regression: legitimate forks, SDK overlap, obfuscation resistance |
+| `tests/unit/test_scoring_engine.py` | 7 | Weighted scoring, malware risk independence, null propagation |
+| `tests/integration/test_synthetic_pipeline.py` | 14 | End-to-end pipeline with synthetic APKs |
+| `tests/integration/test_full_pipeline.py` | 1 | Full pipeline with real APK samples (needs your APKs in tests/samples/) |
+
+**98 tests pass, 1 skipped** (the skipped test requires real APK binaries in `tests/samples/`).
+
+```bash
+# To provide your own sample APKs for the skipped integration test:
+# Place APKs at: tests/samples/{original,clone,unrelated,modified}/*.apk
+# Then run: pytest tests/integration/test_full_pipeline.py -v
+```
+
+### Running tests without Docker
+
+Dependencies are installed in the backend container. For local Python testing:
+
+```bash
+pip install -r backend/requirements.txt pytest
+pytest tests/ -v
+```
+
+On Windows, some packages have limitations:
+- `ssdeep` — no prebuilt wheel; code falls back to TLSH or API-call Jaccard
+- `tlsh` — falls back to Levenshtein string distance
+- These are handled gracefully — tests still pass without these packages
 
 ## Project structure
 
@@ -100,10 +139,12 @@ android-clone-detector/
 ├── frontend/          Next.js + Tailwind dashboard
 ├── backend/            FastAPI app, DB models, worker, report generation
 ├── analyzers/
-│   ├── identity/        package/manifest/certificate comparison
-│   ├── similarity/       icon phash, string TF-IDF, layout, resources
-│   └── dex-risk/          DEX structural similarity + suspicious API findings
-├── scoring/             combines analyzer outputs into 3 headline scores
+│   ├── common/         shared APK utilities (validation, extraction, errors)
+│   ├── identity/       package/manifest/certificate comparison
+│   ├── similarity/     icon phash, string TF-IDF, layout, resources
+│   ├── dex-risk/       DEX structural similarity + suspicious API findings
+│   └── resource/       modular string/asset/image analysis (V3)
+├── scoring/           combines analyzer outputs into 3 headline scores
 ├── storage/             local filesystem: apks/, reports/, tmp/ (gitignored)
 ├── tests/
 │   ├── unit/             pure-function tests, no APKs needed
@@ -112,6 +153,18 @@ android-clone-detector/
 ├── docs/                security posture, service contracts, migration plan
 └── docker-compose.yml
 ```
+
+### Analyzer modules (V3 contracts)
+
+Each analyzer returns a dict with a `"service"` key and degrades gracefully:
+
+| Module | File | Key outputs |
+|---|---|---|
+| **Identity** | `analyzers/identity/analyzer.py` | `certificate_identity_score`, `package_similarity`, `package_match_state` |
+| **Similarity** | `analyzers/similarity/analyzer.py` | `icon_score`, `string_score`, `layout_score`, `resource_score` |
+| **Resource** | `analyzers/resource/analyzer.py` | `string_score`, `asset_score`, `image_score`, `resource_score` (delegates from similarity) |
+| **DEX/Risk** | `analyzers/dex-risk/analyzer.py` | `bytecode_similarity`, `malware_risk_score`, `risk_findings` |
+| **Scoring** | `scoring/engine.py` | `clone_probability`, `malware_risk`, `confidence` |
 
 ## Known limitations (honest, not hidden)
 
@@ -138,3 +191,5 @@ android-clone-detector/
   default weights in `.env` based on real results, not guesses.
 - Cloud migration (`docs/cloud-migration.md`): S3, SQS, RDS, ECS/Fargate,
   ECR, CloudWatch — deliberately deferred until the local MVP is stable.
+- Optional: enable TLSH fuzzy hashing by installing `tlsh` package
+  (`pip install tlsh` on Linux; no wheel available on Windows).

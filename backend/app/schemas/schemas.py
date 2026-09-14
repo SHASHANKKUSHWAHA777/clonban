@@ -48,10 +48,16 @@ class ApkMetadataOut(BaseModel):
 class IdentityResultOut(BaseModel):
     certificate_score: Optional[float]
     certificate_match: Optional[bool]
+    certificate_status: Optional[str] = None  # SAME_SIGNER | DIFFERENT_SIGNER | UNKNOWN
+    certificate_identity_score: Optional[float] = None  # 1.0 / 0.0 / null
     package_score: Optional[float]
+    package_similarity: Optional[float] = None  # [0,1] or null
+    package_match_state: Optional[str] = None  # EXACT_MATCH | NEAR_MATCH | UNRELATED
     manifest_score: Optional[float]
     permissions_score: Optional[float]
+    manifest_findings: list[Any] = []
     findings: list[Any] = []
+    raw: Optional[dict] = None
 
     class Config:
         from_attributes = True
@@ -73,12 +79,21 @@ class SimilarityResultOut(BaseModel):
 class DexResultOut(BaseModel):
     dex_score: Optional[float]
     malware_risk: Optional[float]
+    malware_risk_score: Optional[int] = None  # 0-100 integer (V3)
+    bytecode_similarity: Optional[float] = None  # [0,1] or null (V3)
     class_count_original: Optional[int]
     class_count_candidate: Optional[int]
     method_count_original: Optional[int]
     method_count_candidate: Optional[int]
     ssdeep_score: Optional[float]
     api_call_similarity: Optional[float]
+    dex_files_baseline: list[str] = []
+    dex_files_candidate: list[str] = []
+    dex_count_baseline: Optional[int] = None
+    dex_count_candidate: Optional[int] = None
+    risk_findings: list[Any] = []
+    errors: list[Any] = []
+    raw: Optional[dict] = None
 
     class Config:
         from_attributes = True
@@ -89,6 +104,10 @@ class RiskFindingOut(BaseModel):
     severity: str
     evidence: str
     source_apk: Optional[str]
+    category: Optional[str] = None  # PERMISSION | COMPONENT (V3)
+    contribution: Optional[int] = None  # risk score contribution (V3)
+    baseline_present: Optional[bool] = None  # V3
+    candidate_present: Optional[bool] = None  # V3
 
     class Config:
         from_attributes = True

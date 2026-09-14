@@ -22,6 +22,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from analyzers.identity.analyzer import get_apk_object
+from analyzers.resource.analyzer import analyze as _analyze_resource
+from analyzers.resource.analyzer import analyze as _analyze_resource
 
 logger = logging.getLogger("clonedetector.similarity")
 
@@ -155,14 +157,32 @@ def analyze(original_path: str, candidate_path: str, report_dir: str | None = No
     cand_apk = get_apk_object(candidate_path)
 
     icon_score, icon_distance = _icon_similarity(original_path, candidate_path, orig_apk, cand_apk)
-    string_score = _string_similarity(original_path, candidate_path)
     layout_score = _layout_similarity(original_path, candidate_path)
-    resource_score = _resource_similarity(original_path, candidate_path)
+
+    # Delegate resource analysis to the modular resource analyzer.
+    # This provides richer output: string_score, asset_score, image_score,
+    # resource_score, and structured findings — all null-safe.
+    resource_result = _analyze_resource(original_path, candidate_path)
+    resource_score = resource_result.get("resource_score")
+    # Use the new module's string_score (richer TF-IDF + token analysis)
+    # Fall back to the legacy _string_similarity if the module returns None
+    string_score = resource_result.get("string_score")
+    if string_score is None:
+        string_score = _string_similarity(original_path, candidate_path)
 
     findings = []
     if icon_score >= 0.9:
         findings.append({"type": "ICON_NEAR_IDENTICAL", "severity": "low",
                           "evidence": f"Perceptual hash distance {icon_distance} of {MAX_PHASH_DISTANCE}."})
+
+    # Merge findings from the resource analyzer
+    for f in resource_result.get("findings", []):
+        findings.append(f)
+
+    # Merge errors from the resource analyzer
+    for e in resource_result.get("errors", []):
+        findings.append({"type": "RESOURCE_ERROR", "severity": "info",
+                          "evidence": e.get("message", "")})
 
     diff_image_path = None
     if report_dir:
@@ -176,6 +196,12 @@ def analyze(original_path: str, candidate_path: str, report_dir: str | None = No
         "resource_score": resource_score,
         "diff_image_path": diff_image_path,
         "findings": findings,
+        # Extended fields from resource analyzer for richer reporting
+        "asset_score": resource_result.get("asset_score"),
+        "image_score": resource_result.get("image_score"),
+        "string_details": resource_result.get("string_details", {}),
+        "asset_details": resource_result.get("asset_details", {}),
+        "image_details": resource_result.get("image_details", {}),
     }
 
 
