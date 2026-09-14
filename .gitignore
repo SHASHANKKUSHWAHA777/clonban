@@ -1,0 +1,32 @@
+# Env
+.env
+
+# Storage (local filesystem backend — never commit APKs or generated reports)
+storage/apks/*
+storage/reports/*
+storage/tmp/*
+!storage/apks/.gitkeep
+!storage/reports/.gitkeep
+!storage/tmp/.gitkeep
+
+# Test sample APKs
+tests/samples/original/*.apk
+tests/samples/clone/*.apk
+tests/samples/modified/*.apk
+tests/samples/unrelated/*.apk
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Node / Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# OS
+.DS_Store

@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background-color: #0B0D12;
+  background-image:
+    radial-gradient(circle at 20% -10%, rgba(34, 211, 238, 0.06), transparent 40%),
+    radial-gradient(circle at 90% 0%, rgba(251, 75, 103, 0.05), transparent 35%);
+  color: #E6E9F0;
+}
+
+::selection {
+  background: rgba(34, 211, 238, 0.25);
+}
+
+.scan-divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, #242938 20%, #242938 80%, transparent);
+}

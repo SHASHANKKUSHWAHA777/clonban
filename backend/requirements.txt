@@ -1,0 +1,27 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+sqlalchemy==2.0.35
+psycopg2-binary==2.9.9
+alembic==1.13.3
+redis==5.0.8
+rq==1.16.2
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-multipart==0.0.9
+python-dotenv==1.0.1
+
+# APK / Android analysis
+androguard==4.1.2
+python-Levenshtein==0.25.1
+Pillow==10.4.0
+imagehash==4.3.1
+scikit-learn==1.5.2
+ssdeep==3.4
+lxml==5.3.0
+
+# Reporting
+jinja2==3.1.4
+weasyprint==62.3
+
+# Object storage (optional, used only when STORAGE_BACKEND=minio)
+minio==7.2.9
